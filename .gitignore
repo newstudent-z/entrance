@@ -1,0 +1,14 @@
+# 运行时数据 —— 绝不进 GitHub（里面有密码哈希、API Key、你的错题和照片）
+data/
+uploads/
+*.db
+*.db-journal
+*.db-wal
+
+# 一次性设置码 / 本地环境
+.setup-code
+.env
+
+# Python
+__pycache__/
+*.pyc
