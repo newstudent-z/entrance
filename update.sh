@@ -5,7 +5,7 @@
 # 数据（data/、uploads/）在 .gitignore 里，git pull 不会动它们，密码和 API Key 也都在数据库里、不受影响。
 set -euo pipefail
 cd "$(dirname "$0")"
-git pull --ff-only
+git pull --ff-only origin main
 systemctl restart cuotiben
 sleep 1
 systemctl is-active cuotiben && echo "✅ 已更新并重启: https://codexme.top/cuoti/"
