@@ -60,6 +60,18 @@ def put_setting(k, v):
     with db() as c:
         c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
 
+def delete_upload_if_unused(c, path):
+    """删掉一张照片文件，前提是没有任何题目还在引用它（用同一连接查，能看到本次未提交的改动）。"""
+    if not path: return
+    fn = os.path.basename(path)
+    if not fn: return
+    n = c.execute("SELECT COUNT(*) n FROM items WHERE image=? OR answer_image=?", (path, path)).fetchone()["n"]
+    if n == 0:
+        fp = os.path.join(UPLOAD_DIR, fn)
+        if os.path.isfile(fp):
+            try: os.remove(fp)
+            except OSError: pass
+
 def ai_config():
     prov = get_setting("ai_provider", "deepseek")
     if prov not in AI_PROVIDERS: prov = "deepseek"
@@ -614,6 +626,8 @@ class H(BaseHTTPRequestHandler):
                            d.get("title", it["title"]), d.get("source", it["source"]), d.get("my_answer", it["my_answer"]),
                            d.get("answer", it["answer"]), d.get("note", it["note"]), d.get("reason", it["reason"]),
                            int(d.get("difficulty", it["difficulty"])), img, aimg, today(), m.group(1)))
+                if img != it["image"]: delete_upload_if_unused(c, it["image"])
+                if aimg != (it["answer_image"] if "answer_image" in it.keys() else ""): delete_upload_if_unused(c, it["answer_image"] if "answer_image" in it.keys() else "")
                 self.send_json({"ok": True}); return
             if u.path == "/api/knowledge":
                 c.execute("""INSERT INTO knowledge_notes(subject,knowledge,summary,updated_at) VALUES(?,?,?,?)
@@ -632,7 +646,13 @@ class H(BaseHTTPRequestHandler):
         if not authed(self): self.send_json({"error": "unauthorized"}, 401); return
         m = re.match(r"/api/items/(\d+)", urlparse(self.path).path)
         if m:
-            with db() as c: c.execute("DELETE FROM items WHERE id=?", (m.group(1),))
+            with db() as c:
+                it = c.execute("SELECT image,answer_image FROM items WHERE id=?", (m.group(1),)).fetchone()
+                c.execute("DELETE FROM items WHERE id=?", (m.group(1),))
+                c.execute("DELETE FROM ai_chats WHERE item_id=?", (m.group(1),))
+                if it:
+                    delete_upload_if_unused(c, it["image"])
+                    delete_upload_if_unused(c, it["answer_image"])
             self.send_json({"ok": True}); return
         self.send_json({"error": "not found"}, 404)
 
