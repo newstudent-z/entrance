@@ -77,6 +77,38 @@ def ai_config():
     if prov not in AI_PROVIDERS: prov = "deepseek"
     return prov, get_setting("ai_key", ""), get_setting("ai_model", "") or AI_PROVIDERS[prov]["model"]
 
+OCR_COMMANDS = ("frac","dfrac","tfrac","int","oint","sqrt","infty","to","lim","sum","prod","cdot","times","div","pm","mp","le","ge","ne","approx","sim","equiv","pi","alpha","beta","gamma","delta","Delta","epsilon","theta","lambda","mu","sigma","tau","phi","omega","partial","ln","log","sin","cos","tan","arctan","arcsin","arccos","exp","left","right","text","mathrm","mathbf","mathit","overline","underline","quad","qquad","ldots","cdots","in","subset","cup","cap","forall","exists","circ","prime","begin","end","displaystyle")
+
+def parse_ocr_result(text, chapters):
+    """把 AI 返回的 JSON 文本解析成录入字段；模型常把 LaTeX 反斜杠写坏，这里做修复与合法性校验。"""
+    t = (text or "").strip()
+    t = re.sub(r"^```(json)?", "", t).strip()
+    t = re.sub(r"```$", "", t).strip()
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i: return None
+    raw = t[i:j+1]
+    for cmd in OCR_COMMANDS:
+        raw = re.sub(r"\\(" + cmd + r")(?![a-zA-Z])", r"\\\\\1", raw)
+    data = None
+    for candidate in (raw, re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", raw)):
+        try: data = json.loads(candidate); break
+        except Exception: continue
+    if not isinstance(data, dict): return None
+    subject = str(data.get("subject") or "").strip()
+    chapter = str(data.get("chapter") or "").strip()
+    if chapters:
+        if subject not in chapters:
+            subject = next((s for s, chs in chapters.items() if chapter in chs), "")
+        if subject and chapter not in chapters.get(subject, []): chapter = ""
+        if not subject: chapter = ""
+    try: diff = int(data.get("difficulty") or 3)
+    except Exception: diff = 3
+    return {"title": str(data.get("title") or "").strip()[:80],
+            "subject": subject, "chapter": chapter,
+            "knowledge": str(data.get("knowledge") or "").strip()[:40],
+            "answer": str(data.get("answer") or "").strip(),
+            "difficulty": min(5, max(1, diff))}
+
 def ai_call(messages):
     prov, key, model = ai_config()
     if not key:
@@ -235,6 +267,8 @@ label{font-size:13px;color:#555}.row{display:flex;gap:10px}.row>div{flex:1}
 <button type="button" onclick="document.getElementById('a-img-gal').click()">🖼 换图库图</button>
 <button type="button" onclick="removePhotoQ()" style="color:#b3261e">🗑 删除照片</button>
 </div>
+<button type="button" id="ai-fill-btn" onclick="aiFill()" style="width:100%;margin:6px 0 2px;background:linear-gradient(135deg,#2e6fb7,#1f3a5f);color:#fff;border:0;border-radius:10px;padding:13px;font-size:15.5px;font-weight:700;cursor:pointer">✨ AI 识别题目照片，自动填写</button>
+<p class="meta" id="ai-fill-state" style="margin:2px 0 4px">点它，AI 会看着题目照片自动填好标题、科目板块、知识点，并生成解析草稿（有答案照片时按答案图整理）。填完检查一下再保存。</p>
 <div class="sec">✍️ 我当时的作答</div>
 <label>我当时怎么写的、错在哪一步</label><textarea id="a-my" rows="2"></textarea>
 <div class="sec">✅ 正确答案 / 解析</div>
@@ -407,6 +441,18 @@ async function loadAISettings(){try{const s=await api("api/ai/settings");aiProvi
 function aiProvNote(){const p=aiProviders[$("ai-prov").value];if(!p)return;$("ai-provnote").textContent=p.vision?"✅ 这个服务商能看懂题目和答案的照片，讲解会结合图片。":"⚠️ 注意：这个服务商看不到图片，只能根据题目文字和你填的解析讲解。";$("ai-model").placeholder=p.model}
 $("ai-prov").onchange=()=>{const p=aiProviders[$("ai-prov").value];if(p)$("ai-model").value=p.model;aiProvNote()};
 async function saveAISettings(){await api("api/ai/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:$("ai-prov").value,model:$("ai-model").value.trim(),api_key:$("ai-key").value.trim()})});alert("已保存");loadAISettings()}
+let aiFillBusy=false;
+async function aiFill(){if(aiFillBusy)return;const st=$("ai-fill-state");
+const qb=Q.data||"",qp=Q.data?"":(Q.src||""),ab=A.data||"",ap=A.data?"":(A.src||"");
+if(Q.removed||(!qb&&!qp)){st.textContent="⚠️ 先把题目照片加上（拍照或从图库选一张），再点识别。";return}
+aiFillBusy=true;$("ai-fill-btn").textContent="🤖 正在识别，大约几秒…";
+try{const r=await api("api/ai/ocr-fill",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({image_base64:qb,image_path:qp,answer_image_base64:ab,answer_image_path:ap,chapters:CHAPTERS})});
+if(r.error){st.textContent="⚠️ "+r.error}
+else{if(r.subject&&CHAPTERS[r.subject]){$("a-sub").value=r.subject;opts($("a-ch"),CHAPTERS[r.subject]);if(r.chapter)$("a-ch").value=r.chapter}
+if(r.title)$("a-title").value=r.title;if(r.knowledge)$("a-know").value=r.knowledge;if(r.answer)$("a-ans").value=r.answer;if(r.difficulty)$("a-diff").value=r.difficulty;
+st.textContent="✅ 已按 AI 识别填好（"+(r.subject||"")+(r.chapter?" · "+r.chapter:"")+"），检查一下内容、补上来源和你当时错在哪，再保存。"}}
+catch(e){st.textContent="⚠️ 请求失败，再试一次"}
+$("ai-fill-btn").textContent="✨ AI 识别题目照片，自动填写";aiFillBusy=false}
 /* ---------- 图片编辑器：裁剪 + 旋转（纯原生实现，无第三方库） ---------- */
 let edCB=null,edImg=null,edRot=0,edCrop=null,edScale=1,edDrag=null;
 function edOpen(src,cb){edCB=cb;edRot=0;const im=new Image();im.onload=()=>{edImg=im;$("editor").style.display="flex";edResetCrop();edDraw()};im.onerror=()=>alert("图片加载失败");im.src=src}
@@ -583,6 +629,45 @@ class H(BaseHTTPRequestHandler):
                 c.execute("INSERT INTO ai_chats(item_id,role,content,created_at) VALUES(?,?,?,?)", (item_id, "user", q, today()))
                 c.execute("INSERT INTO ai_chats(item_id,role,content,created_at) VALUES(?,?,?,?)", (item_id, "assistant", reply, today()))
             self.send_json({"reply": reply}); return
+        if u.path == "/api/ai/ocr-fill":
+            prov, key, model = ai_config()
+            if not key:
+                self.send_json({"error": "还没配置 AI 的 API Key。点顶部「⚙️ 设置」，按里面的步骤拿一个 DeepSeek 或通义千问的 Key 填上就能用了。"}, 400); return
+            if not AI_PROVIDERS[prov]["vision"]:
+                self.send_json({"error": "当前 AI 服务商看不了图片，请到「⚙️ 设置」里换成 DeepSeek 或通义千问。"}, 400); return
+            def img_uri(b64, path):
+                if b64:
+                    return b64 if b64.startswith("data:") else "data:image/jpeg;base64," + b64
+                if path:
+                    fp = os.path.join(UPLOAD_DIR, os.path.basename(path))
+                    if os.path.exists(fp):
+                        return "data:image/jpeg;base64," + base64.b64encode(open(fp, "rb").read()).decode()
+                return ""
+            q_uri = img_uri(d.get("image_base64") or "", d.get("image_path") or "")
+            if not q_uri:
+                self.send_json({"error": "先添加题目照片，再用 AI 识别。"}, 400); return
+            a_uri = img_uri(d.get("answer_image_base64") or "", d.get("answer_image_path") or "")
+            chapters = d.get("chapters") if isinstance(d.get("chapters"), dict) else {}
+            catalog = "\n".join(f"{s}：" + " / ".join(chs) for s, chs in chapters.items()) or "数学：高数·函数极限连续"
+            prompt = ("你是考研错题录入助手。第一张图是题目照片" + ("，第二张图是答案/解析照片" if a_uri else "") + "。请把这道题整理成 JSON 输出。\n"
+                      "科目和板块必须从这份清单里原样选最匹配的一项：\n" + catalog + "\n"
+                      "字段要求：\n"
+                      "- title：一句话概括这道题，不超过 25 字\n"
+                      "- subject、chapter：按清单原样填写\n"
+                      "- knowledge：核心知识点名称，简短\n"
+                      "- answer：" + ("把第二张答案图的内容整理成清晰的文字解析" if a_uri else "没有答案图，请你解这道题，给出分步参考解答，结论明确") + "，公式写成 $...$ 的 LaTeX 形式\n"
+                      "- difficulty：整数 1-5，估计对考研学生的难度\n"
+                      "只输出一个 JSON 对象，不要输出其他任何文字，不要用代码块包裹。")
+            parts = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": q_uri}}]
+            if a_uri: parts.append({"type": "image_url", "image_url": {"url": a_uri}})
+            try:
+                raw_reply = ai_call([{"role": "user", "content": parts}])
+            except RuntimeError as e:
+                self.send_json({"error": str(e)}, 502); return
+            parsed = parse_ocr_result(raw_reply, chapters)
+            if not parsed:
+                self.send_json({"error": "AI 返回的内容没解析成功，再点一次试试。"}, 502); return
+            self.send_json(parsed); return
         m = re.match(r"/api/items/(\d+)/toggle", u.path)
         with db() as c:
             if u.path == "/api/items":
